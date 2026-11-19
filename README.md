@@ -1,5 +1,8 @@
 # When lies look like noise: certifying untrusted entanglement swapping
 
+[![DOI](https://zenodo.org/badge/1352415513.svg)](https://doi.org/10.5281/zenodo.24372164)
+
+
 This is the code behind the numerical results in the paper. One script,
 `sim_validation.py`, computes all of them and prints them to stdout.
 
