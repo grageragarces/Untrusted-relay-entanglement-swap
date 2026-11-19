@@ -54,13 +54,14 @@ def kasym(f, d, gmax=0.0):
 
     The two regimes are separated by whether theta is small against g:
       noise-dominated (k >> L/g):  theta ~ eps ~ 2 sqrt(gL/k),  k ~ 32 gmax L/F^2
-      shot-noise limited (g -> 0): theta, eps ~ L/m,            k ~ 20 L /(3F)
+      shot-noise limited (g -> 0): theta ~ 2L/(3m), eps ~ (4+2 sqrt7) L/(3m),
+                                   k ~ 4(6+2 sqrt7) L/(3F) ~ 15.1 L/F
     Neither is accurate near the crossover, and the additive L/m terms are not
     negligible at the k the protocol actually uses, so the exact condition is
     what the test-pair table solves.  Kept only to check the exponents quoted in the text.
     """
     F = f * (1 - gmax)
-    return 32 * gmax * L(d) / F**2, 20 * L(d) / (3 * F)
+    return 32 * gmax * L(d) / F**2, 4 * (6 + 2 * math.sqrt(7)) * L(d) / (3 * F)
 
 
 def _floor(d, gmax, M=M):
@@ -141,6 +142,32 @@ for d in [1e-2, 1e-6, 1e-9]:
     f0, _ = _floor(d, 0.05)
     print(f"  floor at eps_sec={d:g}, gamma=0.05: {f0/0.95*100:.3f}%")
 
+
+def floor_f(d, g, Mb, kcap=None):
+    """Floor on f_target at delivered batch Mb; kcap=None leaves k unbounded."""
+    if kcap is None:
+        return _floor(d, g, Mb)[0] / (1 - g)
+    ks = np.unique(np.logspace(1, math.log10(kcap), 3000).astype(np.int64))
+    return min(lhs(int(x), d, g, Mb) for x in ks) / (1 - g)
+
+
+def batch_for(target, d, g, cap):
+    """Smallest delivered batch (to ~1%) whose floor reaches target."""
+    lo, hi = 10**6, 10**9
+    while hi / lo > 1.01:
+        mid = int(math.sqrt(lo * hi))
+        if floor_f(d, g, mid, mid if cap else None) <= target:
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
+print("  delivered batch needed for the floor to reach f_target=1e-3:")
+for g in GAMMAS:
+    print(f"    gamma={g:<5} {batch_for(1e-3, 0.01, g, False):.2e} (k unbounded), "
+          f"{batch_for(1e-3, 0.01, g, True):.2e} (k <= M)")
+
 # --------------------------------------------- three transfers, side by side
 print("\n=== TRANSFER VARIANTS (eps_sec=0.01, gamma_max=0.05, M=1e6) ===")
 
@@ -180,6 +207,13 @@ for name, fn, km in (("crude N/M", _crude, M), ("Hoeffding", _hoefft, 1e9),
     ks = np.unique(np.logspace(1, math.log10(km), 4000).astype(np.int64))
     fl = min(fn(int(x)) for x in ks)
     print(f"    {name}: {fl / 0.95 * 100:.3f}%")
+
+# Estimation margins from Hoeffding instead of Bernstein: theta = eps =
+# sqrt(L/(2m)) with m = k/2, Serfling transfer unchanged.
+_hoefm = lambda k: 4 * math.sqrt(L(0.01) / k) + (2 * k / M) * tsamp(k, 0.01)
+kH, kB = kvariant(_hoefm, 0.01 * 0.95, 1e9), kexact(0.01, 0.01, 0.05)
+print(f"  Hoeffding estimation margins at f_target=0.01: k={kH:,}, "
+      f"{kH / kB:.1f}x the Bernstein k={kB:,}")
 
 # ------------------------------------------- joint memory / precision budget
 # Table: the smallest deviation rate certifiable at a given memory budget,
@@ -275,6 +309,8 @@ for tgt in (0.5, 0.1, 0.03, 0.01):
     l0, l1 = lifetime_needed(Nreq, 0.0), lifetime_needed(Nreq, 0.01)
     print(f"  f={100*tgt:>4.0f}%  N={Nreq:>8,}  T_mem/tau: g0=0 {l0:.2e}, "
           f"g0=0.01 {l1:.2e}  ({l1/RATE/86400:.2f} d at 9 Hz)")
+print(f"  memory lifetime per batch length: {lifetime_needed(1, 0.0):.1f}x (g0=0), "
+      f"{lifetime_needed(1, 0.01):.1f}x (g0=0.01)")
 print("  lifetime columns of tab:joint:")
 for Ncap in [10**3, 10**4, 10**5, 730_000]:
     l0, l1 = lifetime_needed(Ncap, 0.0), lifetime_needed(Ncap, 0.01)
@@ -328,16 +364,20 @@ for nb, B in [(10**3, 1), (10**3, 100), (10**3, 1000), (10**4, 1),
     print(f"  n_b={nb:>7,} B={B:>5}: delivered M={B*Mb:>10,}  f_target={100*f:.1f}%")
 
 # ----------------------------------------- Test-pair figure (fig:k-vs-f)
+# 90 log-spaced f_target values from each curve's floor to 0.30, rounded to
+# five decimals; k is evaluated at the rounded value and points above the
+# plot's y-range (1.2e7) are dropped.  These are the coordinates in the paper.
 print("\n=== fig:k-vs-f  (k vs f_target, one curve per gamma_max) ===")
 for g in GAMMAS:
     fmin, _ = _floor(0.01, g)
     pts = []
-    for f in np.logspace(math.log10(0.30), math.log10(fmin / (1 - g) * 1.03), 70):
+    for f in np.logspace(math.log10(fmin / (1 - g)), math.log10(0.30), 90):
+        f = round(float(f), 5)
         k = kexact(f, 0.01, g)
-        if k and k <= 1e7:
+        if k and k <= 1.2e7:
             pts.append((f, k))
     print(f"% gamma_max={g:g}")
-    print("    " + " ".join(f"({f:.4f},{k:.0f})" for f, k in pts))
+    print("    " + " ".join(f"({f:.5f},{k})" for f, k in pts))
 
 # ------------------------------------- Detection curve at the operating point
 d, ft, GS = 0.01, 0.01, 0.05          # the operating point of "Target misreport rate"
@@ -345,6 +385,12 @@ k = kexact(ft, d, GS)
 m = k // 2
 th = theta(k, d, GS / 2)
 ep = eps(k, d, GS / 2)
+a0 = GS / 2
+print(f"\n=== RESOLUTION AT THE OPERATING POINT ===\n  anti-correlation rate"
+      f" resolved to sqrt(a(1-a)/M)={100*math.sqrt(a0*(1-a0)/M):.3f} pp by an"
+      f" environment holding all M pairs,\n  sqrt(a(1-a)/k)="
+      f"{100*math.sqrt(a0*(1-a0)/k):.3f} pp by the test; acceptance window"
+      f" 2*theta={200*th:.2f} pp")
 print(f"\n=== DETECTION CURVE ===  gamma={GS} f_target={ft} k={k:,} m={m:,}"
       f"\n  theta={th:.6f} eps={ep:.6f}  eps/theta={ep/th:.2f}"
       f"\n  proven f<={ft}   per-basis crossing f=2*theta/(1-gamma)="
@@ -460,4 +506,4 @@ def symmetrisation(f=0.01, Mdel=M, kk=168_982, trials=20, seed=11):
 print("\n=== SYMMETRISATION (f=0.01, M=1e6, k=168,982) ===")
 for B, (c, p_, b) in symmetrisation().items():
     print(f"  blocks of B={B:>6,}: worst block  index order {100*c:5.1f}%  "
-          f"|  permuted {100*p_:.2f}%  (Lemma-6 bound {100*b:.2f}%)")
+          f"|  permuted {100*p_:.2f}%  (Lemma 4 bound {100*b:.2f}%)")
